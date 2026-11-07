@@ -52,7 +52,14 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
   <p class="sub">Kroatisches Song-Quiz: Ausschnitt anhören, richtigen Titel wählen.</p>
 
   <section id="start" class="card">
-    <p>10 Runden, je ein Ausschnitt von etwa 15 Sekunden und vier Antworten. Du brauchst Internet, die Ausschnitte kommen live von Apple Music.</p>
+    <p>Je Runde ein Ausschnitt von etwa 15 Sekunden und vier Antworten. Die Lieder werden bei jedem Spiel neu aus vielen kroatischen Interpreten gemischt. Du brauchst Internet.</p>
+    <label for="roundsSel" style="display:block;margin:0 0 6px;color:var(--muted)">Anzahl Runden</label>
+    <select id="roundsSel" style="width:100%;margin-bottom:14px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
+      <option value="10">10 Runden</option>
+      <option value="20" selected>20 Runden</option>
+      <option value="30">30 Runden</option>
+      <option value="50">50 Runden</option>
+    </select>
     <button id="startBtn" class="primary">Spiel starten</button>
   </section>
 
@@ -74,7 +81,7 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
     <button id="againBtn" class="primary">Nochmal spielen</button>
   </section>
 
-  <p class="small">Titelliste und Vorschauen: Apple iTunes Search API. Nicht jede Vorschau ist in jedem Land verfügbar, dann wird der Song übersprungen.</p>
+  <p class="small">Titel und Vorschauen: Deezer und Apple iTunes. Ist zu einem Lied keine Vorschau verfügbar, wird es übersprungen.</p>
 </main>
 <audio id="audio" preload="auto"></audio>
 
@@ -123,7 +130,53 @@ const HKEY = "pogodi_pjesmu_gespielt";
 const loadPlayed = () => { try{ return JSON.parse(localStorage.getItem(HKEY) || "[]"); }catch(e){ return []; } };
 const savePlayed = a => { try{ localStorage.setItem(HKEY, JSON.stringify(a)); }catch(e){} };
 let played = [];
-const ROUNDS = 10, CLIP = 15;
+
+// Interpreten mit überwiegend kroatischen Texten. Ihre Lieder werden bei jedem Spiel live geladen.
+const ARTISTS = ["Thompson","Oliver Dragojević","Severina","Doris Dragović","Gibonni","Prljavo kazalište","Parni valjak","Dino Dvornik","Miroslav Škoro","Jelena Rozga","Maja Blagdan","Magazin","Josipa Lisac","Tony Cetinski","Nina Badrić","Giuliano","Massimo Savić","Hladno pivo","Psihomodo Pop","Let 3","Colonia","Tedi Spalato","Petar Grašo","Luka Nižetić","Vanna","Meri Cetinić","Tereza Kesovija","Mate Bulić","Mladen Grdović","Mišo Kovač","Ivana Kindl","Lana Jurčević","Matija Cvek","Danijela Martinović","Antonija Šola","Lidija Bačić Lille","Ivo Amulić","Zlatko Pejaković","Davor Radolfi","Dječaci","Elemental","Fiumens","Daleka obala","Novi fosili","TBF","Opća opasnost","Kawasaki 3P","Aerodrom","Film","Azra","Haustor","Gustafi","Marko Perković Thompson","Klapa Intrade","Klapa Sinj","Boris Novković","Jasmin Stavros","Ante Cash","Jelena Radan","Danijel Popović","Alka Vuica","Ivica Šerfezi","Vice Vukov","Arsen Dedić","Gabi Novak","Ibrica Jusić","Zdenko Runjić","Mirko Kodić","Kemal Monteno","Drago Mlinarec","Kerber","Prljavo kazalište","Bijelo dugme"];
+const BAD_TITLE = /\b(live|remix|instrumental|karaoke|radio edit|acoustic|unplugged|medley|demo|snippet|intro|outro|skit|cover)\b/i;
+const ENG_WORDS = new Set(["the","you","your","my","love","baby","and","of","with","heart","night","girl","boy","time","feel","why","when","what","dont","dance","never","forever","kiss","want","need","just","only","home","stay","dream","dreams","oh","yeah","tonight","summer","angel"]);
+const looksEnglish = t => norm(t).split(" ").some(w => ENG_WORDS.has(w));
+const cleanTitle = t => (t.replace(/\s*[\(\[].*?[\)\]]\s*/g," ").replace(/\s+-\s+.*$/,"").trim()) || t.trim();
+let POOL = SONGS.slice();
+
+async function artistTracks(name){
+  const na = norm(name);
+  const sources = [
+    async () => { const d = await jsonp("https://api.deezer.com/search?limit=50&output=jsonp&q=" + encodeURIComponent('artist:"' + name + '"'), "callback");
+      return (d.data || []).map(r => ({title:r.title, artist:(r.artist||{}).name, preview:r.preview})); },
+    async () => { const d = await jsonp("https://itunes.apple.com/search?media=music&entity=song&attribute=artistTerm&limit=50&term=" + encodeURIComponent(name), "callback");
+      return (d.results || []).map(r => ({title:r.trackName, artist:r.artistName, preview:r.previewUrl})); }
+  ];
+  for(const src of sources){
+    try{
+      const list = (await src()).filter(r => r.preview && r.title && norm(r.artist||"") === na && !BAD_TITLE.test(r.title));
+      if(list.length) return list;
+    }catch(e){ note(name + ": " + (e && e.message ? e.message : e)); }
+  }
+  return [];
+}
+
+async function buildPool(){
+  const picks = shuffle([...new Set(ARTISTS)]).slice(0, 14);
+  const results = await Promise.allSettled(picks.map(artistTracks));
+  const seen = new Set(SONGS.map(x => norm(x.t) + "|" + norm(x.a)));
+  const extra = [];
+  results.forEach((r, i) => {
+    if(r.status !== "fulfilled") return;
+    const mine = [];
+    for(const tr of r.value){
+      const t = cleanTitle(tr.title);
+      const key = norm(t) + "|" + norm(picks[i]);
+      if(!t || looksEnglish(t) || seen.has(key)) continue;
+      seen.add(key);
+      mine.push({t, a:picks[i], preview:tr.preview});
+    }
+    extra.push(...shuffle(mine).slice(0, 14)); // pro Interpret begrenzen, damit es bunt bleibt
+  });
+  POOL = SONGS.concat(extra);
+}
+let ROUNDS = 20;
+const CLIP = 15;
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
@@ -182,6 +235,7 @@ const PROVIDERS = [
 ];
 
 async function getPreview(song){
+  if(song.preview) return song.preview;
   const key = song.t + "|" + song.a;
   if(cache.has(key)) return cache.get(key);
   const p = (async () => {
@@ -254,7 +308,7 @@ async function loadRound(){
     return finish();
   }
 
-  const wrong = shuffle(SONGS.filter(s => s.t !== current.song.t)).slice(0,3);
+  const wrong = shuffle(POOL.filter(s => s.t !== current.song.t)).slice(0,3);
   const options = shuffle([current.song, ...wrong]);
   options.forEach(o => {
     const b = document.createElement("button");
@@ -311,18 +365,29 @@ function finish(){
   $("finalMsg").textContent = r >= .9 ? "Odlično! Echter Kenner." : r >= .6 ? "Dobro! Solide Leistung." : r >= .3 ? "Nicht schlecht, da geht noch was." : "Zeit für eine Kroatien-Playlist.";
 }
 
-function startGame(){
+let starting = false;
+async function startGame(){
+  if(starting) return;
+  starting = true;
   stopClip();
   // Audio per Klick freischalten, damit Safari/Chrome spätere Wiedergabe erlauben
   audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
   audio.play().catch(()=>{});
-  played = loadPlayed();
-  let fresh = SONGS.filter(x => !played.includes(x.t + "|" + x.a));
-  if(fresh.length < ROUNDS + 4){ played = []; savePlayed(played); fresh = SONGS.slice(); }
-  queue = shuffle(fresh);
+  ROUNDS = parseInt($("roundsSel").value, 10) || 20;
   idx = 0; score = 0; current = null;
   ["start","end"].forEach(i => $(i).classList.add("hidden"));
   $("game").classList.remove("hidden");
+  $("opts").innerHTML = ""; $("bar").style.width = "0";
+  $("nextBtn").classList.add("hidden"); $("replayBtn").classList.add("hidden");
+  $("roundLbl").textContent = "Runde 1/" + ROUNDS; $("scoreLbl").textContent = "Punkte: 0";
+  setState("Lade Lieder …");
+  try{ await buildPool(); }catch(e){ POOL = SONGS.slice(); }
+  played = loadPlayed();
+  let fresh = POOL.filter(x => !played.includes(x.t + "|" + x.a));
+  if(fresh.length < ROUNDS + 4){ played = []; savePlayed(played); fresh = POOL.slice(); }
+  queue = shuffle(fresh);
+  starting = false;
+  $("replayBtn").classList.remove("hidden");
   loadRound();
 }
 
