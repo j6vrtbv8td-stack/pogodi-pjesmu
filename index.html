@@ -118,7 +118,7 @@ const cache = new Map();
 
 class NetError extends Error {}
 
-function jsonp(url){
+function jsonp(url, param){
   return new Promise((resolve, reject) => {
     const cb = "itcb" + Math.random().toString(36).slice(2);
     const sc = document.createElement("script");
@@ -126,37 +126,66 @@ function jsonp(url){
     const to = setTimeout(() => { done(); reject(new NetError("Zeitüberschreitung")); }, 8000);
     window[cb] = d => { clearTimeout(to); done(); resolve(d); };
     sc.onerror = () => { clearTimeout(to); done(); reject(new NetError("Skript blockiert")); };
-    sc.src = url + "&callback=" + cb;
+    sc.src = url + "&" + (param || "callback") + "=" + cb;
     document.head.appendChild(sc);
   });
 }
 
-async function itunes(term){
-  const url = "https://itunes.apple.com/search?media=music&entity=song&limit=15&country=HR&term=" + encodeURIComponent(term);
+const diag = [];
+const note = m => { if(diag.length < 12 && !diag.includes(m)) diag.push(m); };
+
+async function viaItunesFetch(song){
+  const url = "https://itunes.apple.com/search?media=music&entity=song&limit=15&term=" + encodeURIComponent(song.t + " " + song.a);
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), 8000);
   try{
-    const ctl = new AbortController();
-    const to = setTimeout(() => ctl.abort(), 8000);
     const res = await fetch(url, {signal: ctl.signal});
-    clearTimeout(to);
     if(!res.ok) throw new NetError("HTTP " + res.status);
-    return await res.json();
-  }catch(e){
-    return await jsonp(url); // zweiter Versuch ohne CORS
-  }
+    const data = await res.json();
+    return (data.results || []).map(r => ({title:r.trackName, artist:r.artistName, preview:r.previewUrl}));
+  }finally{ clearTimeout(to); }
 }
+
+async function viaItunesJsonp(song){
+  const url = "https://itunes.apple.com/search?media=music&entity=song&limit=15&term=" + encodeURIComponent(song.t + " " + song.a);
+  const data = await jsonp(url, "callback");
+  return (data.results || []).map(r => ({title:r.trackName, artist:r.artistName, preview:r.previewUrl}));
+}
+
+async function viaDeezer(song){
+  const url = "https://api.deezer.com/search?limit=15&output=jsonp&q=" + encodeURIComponent(song.t + " " + song.a);
+  const data = await jsonp(url, "callback");
+  return (data.data || []).map(r => ({title:r.title, artist:(r.artist||{}).name, preview:r.preview}));
+}
+
+const PROVIDERS = [
+  ["iTunes", viaItunesFetch],
+  ["iTunes-JSONP", viaItunesJsonp],
+  ["Deezer", viaDeezer]
+];
 
 async function getPreview(song){
   const key = song.t + "|" + song.a;
   if(cache.has(key)) return cache.get(key);
   const p = (async () => {
-    const data = await itunes(song.t + " " + song.a);
     const nt = norm(song.t), na = norm(song.a).split(" ")[0];
-    const hit = (data.results || []).find(r => r.previewUrl && norm(r.trackName||"").includes(nt) && norm(r.artistName||"").includes(na));
-    if(!hit) throw new Error("kein Treffer");
-    return hit.previewUrl;
+    let reached = false;
+    for(const [name, fn] of PROVIDERS){
+      try{
+        const list = await fn(song);
+        reached = true;
+        const hit = list.find(r => r.preview && norm(r.title||"").includes(nt) && norm(r.artist||"").includes(na));
+        if(hit) return hit.preview;
+        note(name + ": kein Treffer");
+      }catch(e){
+        note(name + ": " + (e && e.message ? e.message : e));
+      }
+    }
+    if(!reached) throw new NetError("keine Quelle erreichbar");
+    throw new Error("kein Treffer");
   })();
   cache.set(key, p);
-  p.catch(() => { if(cache.get(key) === p) cache.delete(key); }); // Fehler nicht dauerhaft merken
+  p.catch(() => { if(cache.get(key) === p) cache.delete(key); });
   return p;
 }
 
@@ -252,7 +281,8 @@ function showError(){
   $("game").classList.add("hidden");
   $("end").classList.remove("hidden");
   $("finalScore").textContent = "Keine Verbindung";
-  $("finalMsg").textContent = "Die Song-Ausschnitte konnten nicht von Apple geladen werden. Prüfe dein Internet und öffne die Datei direkt im Browser (Safari, Chrome oder Firefox), nicht in einer Vorschau oder einem Chat.";
+  $("finalMsg").textContent = "Die Song-Ausschnitte konnten nicht von Apple geladen werden. Prüfe dein Internet und öffne die Datei direkt im Browser (Safari, Chrome oder Firefox), nicht in einer Vorschau oder einem Chat.\n\nDetails: " + diag.join(" | ");
+  $("finalMsg").style.whiteSpace = "pre-wrap";
 }
 
 function finish(){
