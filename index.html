@@ -83,29 +83,46 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 const SONGS = [
   {t:"Bojna Čavoglave", a:"Thompson"},
   {t:"Lijepa li si", a:"Thompson"},
+  {t:"Geni kameni", a:"Thompson"},
+  {t:"Anica kninska kraljica", a:"Thompson"},
+  {t:"Iza devet sela", a:"Thompson"},
   {t:"Cesarica", a:"Oliver Dragojević"},
   {t:"Vjeruj u ljubav", a:"Oliver Dragojević"},
+  {t:"Galeb i ja", a:"Oliver Dragojević"},
+  {t:"Ča je život vengo fantažija", a:"Oliver Dragojević"},
   {t:"Moja štikla", a:"Severina"},
   {t:"Dalmatinac", a:"Severina"},
   {t:"Trava zelena", a:"Severina"},
-  {t:"Rim Tim Tagi Dim", a:"Baby Lasagna"},
+  {t:"Italijan", a:"Severina"},
+  {t:"Virujem u te", a:"Severina"},
+  {t:"Dobrodošao u klub", a:"Severina"},
   {t:"Mama ŠČ!", a:"Let 3"},
   {t:"Marija Magdalena", a:"Doris Dragović"},
   {t:"Ruža vjetrova", a:"Gibonni"},
   {t:"Sve je lako kad si mlad", a:"Prljavo kazalište"},
   {t:"Mojoj majci", a:"Prljavo kazalište"},
+  {t:"Heroj ulice", a:"Prljavo kazalište"},
+  {t:"Sretno dijete", a:"Prljavo kazalište"},
   {t:"Jedina", a:"Parni valjak"},
+  {t:"Sve još miriše na nju", a:"Parni valjak"},
+  {t:"Ima nešto u tom", a:"Parni valjak"},
   {t:"Ti si mi u krvi", a:"Dino Dvornik"},
+  {t:"Kokolo", a:"Dino Dvornik"},
   {t:"Ne dirajte mi ravnicu", a:"Miroslav Škoro"},
+  {t:"Sude mi", a:"Miroslav Škoro"},
   {t:"Bezuvjetno", a:"Jelena Rozga"},
-  {t:"Guilty Pleasure", a:"Mia Dimšić"},
-  {t:"Crazy", a:"Franka"},
-  {t:"My Friend", a:"Jacques Houdek"},
-  {t:"Lighthouse", a:"Nina Kraljić"},
+  {t:"Nirvana", a:"Jelena Rozga"},
+  {t:"Bižuterija", a:"Jelena Rozga"},
   {t:"Sveta ljubav", a:"Maja Blagdan"},
-  {t:"Everything I Want", a:"Vesna Pisarović"},
-  {t:"Hajde da ludujemo", a:"Magazin & Lidija"}
+  {t:"Hajde da ludujemo", a:"Magazin & Lidija"},
+  {t:"Magla", a:"Josipa Lisac"}
 ];
+
+// Merkt sich gespielte Songs, damit neue Runden andere Lieder bringen
+const HKEY = "pogodi_pjesmu_gespielt";
+const loadPlayed = () => { try{ return JSON.parse(localStorage.getItem(HKEY) || "[]"); }catch(e){ return []; } };
+const savePlayed = a => { try{ localStorage.setItem(HKEY, JSON.stringify(a)); }catch(e){} };
+let played = [];
 const ROUNDS = 10, CLIP = 15;
 
 const $ = id => document.getElementById(id);
@@ -195,9 +212,7 @@ function stopClip(){ clearInterval(timer); audio.pause(); }
 
 function playClip(){
   stopClip();
-  const startMax = Math.max(0, (audio.duration || 30) - CLIP - 1);
-  const start = current.start ?? (current.start = Math.random() * startMax);
-  audio.currentTime = start;
+  audio.currentTime = 0; // Vorschau beginnt in der Regel an der bekanntesten Stelle
   audio.play().then(() => {
     setState("Läuft …");
     const t0 = performance.now();
@@ -227,6 +242,7 @@ async function loadRound(){
     try{
       const url = await getPreview(song);
       current = {song, url};
+      played.push(song.t + "|" + song.a); savePlayed(played);
       break;
     }catch(e){
       if(e instanceof NetError) netFails++;
@@ -300,7 +316,10 @@ function startGame(){
   // Audio per Klick freischalten, damit Safari/Chrome spätere Wiedergabe erlauben
   audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
   audio.play().catch(()=>{});
-  queue = shuffle(SONGS);
+  played = loadPlayed();
+  let fresh = SONGS.filter(x => !played.includes(x.t + "|" + x.a));
+  if(fresh.length < ROUNDS + 4){ played = []; savePlayed(played); fresh = SONGS.slice(); }
+  queue = shuffle(fresh);
   idx = 0; score = 0; current = null;
   ["start","end"].forEach(i => $(i).classList.add("hidden"));
   $("game").classList.remove("hidden");
