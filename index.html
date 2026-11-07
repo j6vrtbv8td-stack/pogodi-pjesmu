@@ -42,6 +42,7 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 .row{display:flex;gap:10px}
 .row>*{flex:1}
 .score{font-family:var(--display);font-size:3rem;margin:6px 0}
+.reveal{font-family:var(--display);font-size:1.25rem;margin:0 0 14px;min-height:1.5em;text-wrap:balance}
 .small{color:var(--muted);font-size:.85rem;margin-top:18px}
 </style>
 </head>
@@ -49,10 +50,15 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
 <main>
   <div class="checker" aria-hidden="true"></div>
   <h1>Pogodi pjesmu</h1>
-  <p class="sub">Kroatisches Song-Quiz: Ausschnitt anhören, richtigen Titel wählen.</p>
+  <p class="sub">Kroatisches Songspiel: erkenne den Song oder sing die Zeile zu Ende.</p>
 
   <section id="start" class="card">
-    <p>Je Runde ein Ausschnitt von etwa 15 Sekunden und vier Antworten. Die Lieder werden bei jedem Spiel neu aus vielen kroatischen Interpreten gemischt. Du brauchst Internet.</p>
+    <p><b>Weitersingen:</b> Der Sänger singt 4 Sekunden, dann bist du dran und singst die Zeile zu Ende. Danach hörst du die Auflösung und bewertest dich selbst.<br><b>Titel raten:</b> Ausschnitt anhören, richtigen Titel unter vier Antworten wählen.<br>Die Lieder werden bei jedem Spiel neu aus vielen kroatischen Interpreten gemischt. Du brauchst Internet.</p>
+    <label for="modeSel" style="display:block;margin:0 0 6px;color:var(--muted)">Spielart</label>
+    <select id="modeSel" style="width:100%;margin-bottom:14px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
+      <option value="sing" selected>Weitersingen</option>
+      <option value="guess">Titel raten</option>
+    </select>
     <label for="roundsSel" style="display:block;margin:0 0 6px;color:var(--muted)">Anzahl Runden</label>
     <select id="roundsSel" style="width:100%;margin-bottom:14px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
       <option value="10">10 Runden</option>
@@ -68,6 +74,14 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
     <div class="bar" aria-hidden="true"><i id="bar"></i></div>
     <p id="state" class="state" aria-live="polite">Lade Ausschnitt …</p>
     <div id="opts" class="opts"></div>
+    <div id="singBox" class="hidden">
+      <p id="revealTxt" class="reveal" aria-live="polite"></p>
+      <div id="selfRow" class="row hidden" style="margin-bottom:14px">
+        <button id="knewBtn" class="primary" style="background:var(--ok)">Gewusst</button>
+        <button id="missBtn" class="ghost">Nicht gewusst</button>
+      </div>
+      <button id="revealBtn" class="primary" style="margin-bottom:14px">Auflösung anhören</button>
+    </div>
     <div class="row">
       <button id="replayBtn" class="ghost">Nochmal anhören</button>
       <button id="nextBtn" class="primary hidden">Weiter</button>
@@ -176,7 +190,8 @@ async function buildPool(){
   POOL = SONGS.concat(extra);
 }
 let ROUNDS = 20;
-const CLIP = 15;
+const CLIP = 15, SING_LEN = 4, REVEAL_LEN = 7;
+let mode = "sing";
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
@@ -264,18 +279,25 @@ function setState(msg){ $("state").textContent = msg; }
 
 function stopClip(){ clearInterval(timer); audio.pause(); }
 
-function playClip(){
+function playSegment(from, len, done){
   stopClip();
-  audio.currentTime = 0; // Vorschau beginnt in der Regel an der bekanntesten Stelle
+  if(Math.abs(audio.currentTime - from) > 0.3) audio.currentTime = from; // Weiterspielen ohne Sprung, wenn möglich
   audio.play().then(() => {
     setState("Läuft …");
-    const t0 = performance.now();
     timer = setInterval(() => {
-      const p = Math.min(1, (performance.now() - t0) / (CLIP*1000));
+      const p = Math.min(1, (audio.currentTime - from) / len);
       $("bar").style.width = (p*100) + "%";
-      if(p >= 1){ stopClip(); setState(answered ? "" : "Ausschnitt vorbei, wähle eine Antwort."); }
-    }, 100);
+      if(p >= 1 || audio.ended){ stopClip(); if(done) done(); }
+    }, 40);
   }).catch(() => setState("Tippe auf „Nochmal anhören“, um abzuspielen."));
+}
+
+function playClip(){
+  playSegment(0, CLIP, () => setState(answered ? "" : "Ausschnitt vorbei, wähle eine Antwort."));
+}
+
+function playSingStart(){
+  playSegment(0, SING_LEN, () => setState("Jetzt du: sing die Zeile zu Ende!"));
 }
 
 async function loadRound(){
@@ -284,6 +306,8 @@ async function loadRound(){
   $("nextBtn").classList.add("hidden");
   $("replayBtn").classList.remove("hidden");
   $("opts").innerHTML = "";
+  $("singBox").classList.add("hidden");
+  $("revealTxt").textContent = "";
   $("roundLbl").textContent = "Runde " + (idx+1) + "/" + ROUNDS;
   $("scoreLbl").textContent = "Punkte: " + score;
   setState("Lade Ausschnitt …");
@@ -306,6 +330,17 @@ async function loadRound(){
   if(!current){
     if(netFails >= 3) return showError();
     return finish();
+  }
+
+  if(mode === "sing"){
+    $("singBox").classList.remove("hidden");
+    $("revealBtn").classList.remove("hidden");
+    $("selfRow").classList.add("hidden");
+    audio.src = current.url;
+    audio.onloadedmetadata = () => playSingStart();
+    audio.load();
+    if(queue[0]) getPreview(queue[0]).catch(()=>{});
+    return;
   }
 
   const wrong = shuffle(POOL.filter(s => s.t !== current.song.t)).slice(0,3);
@@ -360,7 +395,7 @@ function finish(){
   $("game").classList.add("hidden");
   $("end").classList.remove("hidden");
   const total = Math.max(1, Math.min(idx, ROUNDS));
-  $("finalScore").textContent = score + "/" + total;
+  $("finalScore").textContent = score + "/" + total + (mode === "sing" ? " gewusst" : "");
   const r = score / total;
   $("finalMsg").textContent = r >= .9 ? "Odlično! Echter Kenner." : r >= .6 ? "Dobro! Solide Leistung." : r >= .3 ? "Nicht schlecht, da geht noch was." : "Zeit für eine Kroatien-Playlist.";
 }
@@ -374,6 +409,7 @@ async function startGame(){
   audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
   audio.play().catch(()=>{});
   ROUNDS = parseInt($("roundsSel").value, 10) || 20;
+  mode = $("modeSel").value === "guess" ? "guess" : "sing";
   idx = 0; score = 0; current = null;
   ["start","end"].forEach(i => $(i).classList.add("hidden"));
   $("game").classList.remove("hidden");
@@ -393,8 +429,20 @@ async function startGame(){
 
 $("startBtn").onclick = startGame;
 $("againBtn").onclick = startGame;
-$("replayBtn").onclick = () => { if(current) playClip(); };
-$("nextBtn").onclick = () => { idx++; if(idx >= ROUNDS){ idx = ROUNDS; finish(); } else { current = null; loadRound(); } };
+function goNext(){ stopClip(); idx++; if(idx >= ROUNDS){ idx = ROUNDS; finish(); } else { current = null; loadRound(); } }
+$("replayBtn").onclick = () => { if(!current) return; if(mode === "sing") playSingStart(); else playClip(); };
+$("nextBtn").onclick = goNext;
+$("revealBtn").onclick = () => {
+  if(!current) return;
+  $("revealBtn").classList.add("hidden");
+  $("replayBtn").classList.add("hidden");
+  $("revealTxt").textContent = current.song.t + " von " + current.song.a;
+  $("selfRow").classList.remove("hidden");
+  playSegment(SING_LEN, REVEAL_LEN, () => setState("Hast du die Zeile richtig gesungen?"));
+  setState("So geht es weiter …");
+};
+$("knewBtn").onclick = () => { score++; $("scoreLbl").textContent = "Punkte: " + score; goNext(); };
+$("missBtn").onclick = goNext;
 </script>
 </body>
 </html>
