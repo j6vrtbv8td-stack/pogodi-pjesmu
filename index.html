@@ -53,7 +53,7 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
   <p class="sub">Kroatisches Songspiel: erkenne den Song oder sing die Zeile zu Ende.</p>
 
   <section id="start" class="card">
-    <p><b>Weitersingen:</b> Der Sänger singt 4 Sekunden, dann bist du dran und singst die Zeile zu Ende. Danach hörst du die Auflösung und bewertest dich selbst.<br><b>Titel raten:</b> Ausschnitt anhören, richtigen Titel unter vier Antworten wählen.<br>Die Lieder werden bei jedem Spiel neu aus vielen kroatischen Interpreten gemischt. Du brauchst Internet.</p>
+    <p><b>Weitersingen:</b> Der Sänger singt 15 Sekunden, dann bist du dran und singst weiter. Stille Stellen werden übersprungen. Danach hörst du die Auflösung und bewertest dich selbst.<br><b>Titel raten:</b> Ausschnitt anhören, richtigen Titel unter vier Antworten wählen.<br>Die Lieder werden bei jedem Spiel neu aus vielen kroatischen Interpreten gemischt. Du brauchst Internet.</p>
     <label for="modeSel" style="display:block;margin:0 0 6px;color:var(--muted)">Spielart</label>
     <select id="modeSel" style="width:100%;margin-bottom:14px;padding:12px;border-radius:10px;border:1px solid var(--line);background:var(--bg);color:var(--text);font:inherit">
       <option value="sing" selected>Weitersingen</option>
@@ -80,7 +80,8 @@ button:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
         <button id="knewBtn" class="primary" style="background:var(--ok)">Gewusst</button>
         <button id="missBtn" class="ghost">Nicht gewusst</button>
       </div>
-      <button id="revealBtn" class="primary" style="margin-bottom:14px">Auflösung anhören</button>
+      <button id="revealBtn" class="primary" style="margin-bottom:10px">Auflösung anhören</button>
+      <button id="skipBtn" class="ghost" style="width:100%;margin-bottom:14px">Kein Gesang? Anderes Lied</button>
     </div>
     <div class="row">
       <button id="replayBtn" class="ghost">Nochmal anhören</button>
@@ -190,8 +191,39 @@ async function buildPool(){
   POOL = SONGS.concat(extra);
 }
 let ROUNDS = 20;
-const CLIP = 15, SING_LEN = 4, REVEAL_LEN = 7;
+const CLIP = 15, SING_LEN = 15, REVEAL_LEN = 7;
 let mode = "sing";
+let actx = null;
+
+// Sucht im 30-Sekunden-Ausschnitt das Fenster mit den wenigsten stillen Stellen.
+// Klappt nur, wenn der Server die Analyse erlaubt, sonst wird bei 0 gestartet.
+async function findStart(url){
+  try{
+    if(!actx) return 0;
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 6000);
+    const res = await fetch(url, {signal: ctl.signal});
+    const ab = await res.arrayBuffer();
+    clearTimeout(to);
+    const buf = await new Promise((ok, err) => actx.decodeAudioData(ab, ok, err));
+    const ch = buf.getChannelData(0), sr = buf.sampleRate, win = Math.floor(sr * 0.25);
+    const n = Math.floor(ch.length / win), rms = [];
+    for(let i = 0; i < n; i++){
+      let sum = 0; for(let j = i*win; j < (i+1)*win; j++) sum += ch[j]*ch[j];
+      rms.push(Math.sqrt(sum / win));
+    }
+    const peak = Math.max(...rms); if(!(peak > 0)) return 0;
+    const act = rms.map(v => v > peak * 0.15 ? 1 : 0);
+    const need = Math.round(SING_LEN / 0.25), tail = Math.round(REVEAL_LEN / 0.25);
+    const maxStart = Math.max(0, n - need - tail);
+    let best = 0, bestScore = -1;
+    for(let st = 0; st <= maxStart; st += 2){
+      let sc = 0; for(let k = st; k < st + need && k < n; k++) sc += act[k];
+      if(sc > bestScore){ bestScore = sc; best = st; }
+    }
+    return best * 0.25;
+  }catch(e){ return 0; }
+}
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
@@ -297,7 +329,7 @@ function playClip(){
 }
 
 function playSingStart(){
-  playSegment(0, SING_LEN, () => setState("Jetzt du: sing die Zeile zu Ende!"));
+  playSegment(current.start || 0, SING_LEN, () => setState("Jetzt du: sing weiter!"));
 }
 
 async function loadRound(){
@@ -335,7 +367,9 @@ async function loadRound(){
   if(mode === "sing"){
     $("singBox").classList.remove("hidden");
     $("revealBtn").classList.remove("hidden");
+    $("skipBtn").classList.remove("hidden");
     $("selfRow").classList.add("hidden");
+    current.start = await findStart(current.url);
     audio.src = current.url;
     audio.onloadedmetadata = () => playSingStart();
     audio.load();
@@ -408,6 +442,7 @@ async function startGame(){
   // Audio per Klick freischalten, damit Safari/Chrome spätere Wiedergabe erlauben
   audio.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
   audio.play().catch(()=>{});
+  if(!actx){ try{ actx = new (window.AudioContext || window.webkitAudioContext)(); }catch(e){ actx = null; } }
   ROUNDS = parseInt($("roundsSel").value, 10) || 20;
   mode = $("modeSel").value === "guess" ? "guess" : "sing";
   idx = 0; score = 0; current = null;
@@ -435,12 +470,14 @@ $("nextBtn").onclick = goNext;
 $("revealBtn").onclick = () => {
   if(!current) return;
   $("revealBtn").classList.add("hidden");
+  $("skipBtn").classList.add("hidden");
   $("replayBtn").classList.add("hidden");
   $("revealTxt").textContent = current.song.t + " von " + current.song.a;
   $("selfRow").classList.remove("hidden");
-  playSegment(SING_LEN, REVEAL_LEN, () => setState("Hast du die Zeile richtig gesungen?"));
+  playSegment((current.start || 0) + SING_LEN, REVEAL_LEN, () => setState("Hast du richtig weitergesungen?"));
   setState("So geht es weiter …");
 };
+$("skipBtn").onclick = () => { stopClip(); current = null; loadRound(); };
 $("knewBtn").onclick = () => { score++; $("scoreLbl").textContent = "Punkte: " + score; goNext(); };
 $("missBtn").onclick = goNext;
 </script>
